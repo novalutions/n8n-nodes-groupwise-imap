@@ -15,8 +15,9 @@
   "license": "MIT",
   "homepage": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap#readme",
   "author": {
-    "name": "Jeremie Constant",
-    "url": "https://github.com/jeremieconstant"
+    "name": "novalutions",
+    "email": "info@novalutions.de",
+    "url": "https://www.novalutions.de"
   },
   "repository": {
     "type": "git",

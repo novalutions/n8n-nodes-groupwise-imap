@@ -103,10 +103,17 @@ If you encounter **"Unexpected close"** errors:
 5. Try increasing the **Connection Timeout** and **Socket Timeout** values
 6. Try enabling **Use STARTTLS** if direct TLS fails
 
+## About
+
+This node is developed and maintained by **[novalutions](https://www.novalutions.de)**, a digital agency specializing in workflow automation, system integration, and custom n8n solutions.
+
+Need help integrating GroupWise, n8n, or other enterprise systems into your workflows? [Get in touch](https://www.novalutions.de) — we offer consulting, custom node development, and managed automation services.
+
 ## Resources
 
 - [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
 - [GroupWise IMAP documentation](https://www.novell.com/documentation/groupwise18/gw18_guide_interop/data/al592dd.html)
+- [novalutions — Digital Agency for Workflow Automation](https://www.novalutions.de)
 
 ## License
 
