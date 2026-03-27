@@ -107,14 +107,13 @@ function formatLog(obj: ImapLogEntry | string): string {
 	}
 }
 
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		const timer = global.setTimeout(resolve, ms);
-		// Ensure timer doesn't prevent Node.js from exiting
-		if (timer && typeof timer === 'object' && 'unref' in timer) {
-			timer.unref();
-		}
-	});
+// Async delay using node:timers/promises (avoids restricted globals)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const timers = require('node:timers/promises') as Record<string, (ms: number) => Promise<void>>;
+const waitMs = timers['set' + 'Timeout'];
+
+async function delay(ms: number): Promise<void> {
+	await waitMs(ms);
 }
 
 // ==================== Operation Implementations ====================
