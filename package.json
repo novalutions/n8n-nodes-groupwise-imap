@@ -31,15 +31,20 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-icons",
-    "copy-icons": "cp nodes/GroupwiseImap/*.svg dist/nodes/GroupwiseImap/ 2>/dev/null || true",
-    "dev": "tsc --watch",
-    "prepublishOnly": "npm run build",
-    "lint": "eslint nodes/ --ext .ts"
+    "build": "n8n-node build",
+    "build:watch": "tsc --watch",
+    "dev": "n8n-node dev",
+    "lint": "n8n-node lint",
+    "lint:fix": "n8n-node lint --fix",
+    "release": "n8n-node release",
+    "prepublishOnly": "n8n-node prerelease"
   },
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "credentials": [],
+    "strict": false,
+    "credentials": [
+      "dist/credentials/GroupwiseImapApi.credentials.js"
+    ],
     "nodes": [
       "dist/nodes/GroupwiseImap/GroupwiseImap.node.js"
     ]
@@ -49,9 +54,13 @@
     "nodemailer": "^8.0.2"
   },
   "devDependencies": {
+    "@n8n/node-cli": "^0.23.1",
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^6.4.17",
+    "eslint": "^9.0.0",
     "n8n-workflow": "^1.0.0",
+    "prettier": "^3.0.0",
+    "release-it": "^19.0.0",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {

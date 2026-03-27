@@ -13,6 +13,271 @@ import {
 import { ImapFlow, ImapFlowOptions } from 'imapflow';
 import * as nodemailer from 'nodemailer';
 
+// ==================== Types ====================
+
+interface NodeOptions {
+	connectionTimeout?: number;
+	enableDebug?: boolean;
+	greetingTimeout?: number;
+	ignoreCertErrors?: boolean;
+	loginMethod?: string;
+	maxRetries?: number;
+	retryDelay?: number;
+	socketTimeout?: number;
+	useStartTls?: boolean;
+}
+
+interface ImapLogEntry {
+	msg?: string;
+	[key: string]: unknown;
+}
+
+// ==================== Helper Functions ====================
+
+function createImapClient(
+	credentials: ICredentialDataDecryptedObject,
+	options?: NodeOptions,
+	context?: IExecuteFunctions,
+): ImapFlow {
+	const host = credentials.host as string;
+	const port = (credentials.port as number) || 993;
+	const user = credentials.user as string;
+	const password = credentials.password as string;
+	const secure = (credentials.secure as boolean) ?? true;
+	const skipTlsVerify = (credentials.skipTlsVerify as boolean) ?? false;
+	const ignoreCertErrors = (options?.ignoreCertErrors ?? true) || skipTlsVerify;
+	const useStartTls = options?.useStartTls ?? false;
+
+	const auth: ImapFlowOptions['auth'] = {
+		user,
+		pass: password,
+	};
+
+	if (options?.loginMethod && options.loginMethod !== 'auto') {
+		auth.loginMethod = options.loginMethod;
+	}
+
+	let logger: ImapFlowOptions['logger'] = false;
+	if (options?.enableDebug && context) {
+		logger = {
+			debug: (obj: ImapLogEntry) => context.logger.debug(`[IMAP] ${formatLog(obj)}`),
+			info: (obj: ImapLogEntry) => context.logger.info(`[IMAP] ${formatLog(obj)}`),
+			warn: (obj: ImapLogEntry) => context.logger.warn(`[IMAP] ${formatLog(obj)}`),
+			error: (obj: ImapLogEntry) => context.logger.error(`[IMAP] ${formatLog(obj)}`),
+		};
+	}
+
+	const tlsOptions: Record<string, unknown> = {
+		rejectUnauthorized: !ignoreCertErrors,
+		minVersion: 'TLSv1',
+	};
+
+	if (ignoreCertErrors) {
+		tlsOptions.checkServerIdentity = () => undefined;
+	}
+
+	const imapConfig: ImapFlowOptions = {
+		host,
+		port,
+		secure: useStartTls ? false : secure,
+		auth,
+		tls: tlsOptions,
+		logger,
+		connectionTimeout: options?.connectionTimeout ?? 90000,
+		greetingTimeout: options?.greetingTimeout ?? 30000,
+		socketTimeout: options?.socketTimeout ?? 300000,
+		disableCompression: true,
+		disableAutoIdle: true,
+		disableBinary: true,
+		disableAutoEnable: true,
+		clientInfo: false as unknown as undefined,
+		...(useStartTls ? { doSTARTTLS: true } : {}),
+	};
+
+	return new ImapFlow(imapConfig);
+}
+
+function formatLog(obj: ImapLogEntry | string): string {
+	if (typeof obj === 'string') return obj;
+	if (obj?.msg) return obj.msg;
+	try {
+		return JSON.stringify(obj);
+	} catch {
+		return String(obj);
+	}
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		const timer = global.setTimeout(resolve, ms);
+		// Ensure timer doesn't prevent Node.js from exiting
+		if (timer && typeof timer === 'object' && 'unref' in timer) {
+			timer.unref();
+		}
+	});
+}
+
+// ==================== Operation Implementations ====================
+
+async function executeCreateDraft(
+	context: IExecuteFunctions,
+	client: ImapFlow,
+	itemIndex: number,
+): Promise<INodeExecutionData[]> {
+	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
+	const inputFormat = context.getNodeParameter('inputFormat', itemIndex) as string;
+
+	let rfc822Content: string | Buffer;
+
+	if (inputFormat === 'rfc822') {
+		rfc822Content = context.getNodeParameter('rfc822Content', itemIndex) as string;
+	} else {
+		const from = context.getNodeParameter('from', itemIndex) as string;
+		const to = context.getNodeParameter('to', itemIndex) as string;
+		const subject = context.getNodeParameter('subject', itemIndex) as string;
+		const text = context.getNodeParameter('text', itemIndex) as string;
+		const html = context.getNodeParameter('html', itemIndex, '') as string;
+
+		const transporter = nodemailer.createTransport({
+			streamTransport: true,
+			buffer: true,
+		});
+
+		const mailOptions: nodemailer.SendMailOptions = {
+			from,
+			to,
+			subject,
+			date: new Date(),
+		};
+
+		if (html) {
+			mailOptions.html = html;
+		} else {
+			mailOptions.text = text;
+		}
+
+		const info = await transporter.sendMail(mailOptions);
+		rfc822Content = (info as unknown as { message: Buffer }).message;
+	}
+
+	const appendResult = await client.append(mailbox, rfc822Content, ['\\Draft']);
+
+	if (!appendResult) {
+		throw new NodeOperationError(
+			context.getNode(),
+			`APPEND to "${mailbox}" failed. The server did not confirm the operation.`,
+		);
+	}
+
+	return [
+		{
+			json: {
+				success: true,
+				mailbox,
+				uid: appendResult.uid,
+				uidValidity: Number(appendResult.uidValidity),
+				seq: appendResult.seq,
+			},
+		},
+	];
+}
+
+async function executeListMailboxes(client: ImapFlow): Promise<INodeExecutionData[]> {
+	const mailboxes = await client.list();
+	return mailboxes.map((mb) => ({
+		json: {
+			name: mb.name,
+			path: mb.path,
+			delimiter: mb.delimiter,
+			flags: Array.from(mb.flags || []),
+			specialUse: mb.specialUse || null,
+			listed: mb.listed,
+			subscribed: mb.subscribed,
+		},
+	}));
+}
+
+async function executeGetEmails(
+	context: IExecuteFunctions,
+	client: ImapFlow,
+	itemIndex: number,
+): Promise<INodeExecutionData[]> {
+	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
+	const limit = context.getNodeParameter('limit', itemIndex) as number;
+
+	await client.mailboxOpen(mailbox, { readOnly: true });
+
+	const results: INodeExecutionData[] = [];
+	let count = 0;
+
+	for await (const message of client.fetch('1:*', {
+		envelope: true,
+		flags: true,
+		uid: true,
+	})) {
+		results.push({
+			json: {
+				uid: message.uid,
+				seq: message.seq,
+				flags: Array.from(message.flags || []),
+				envelope: message.envelope as unknown as Record<string, unknown>,
+			},
+		});
+		count++;
+		if (count >= limit) break;
+	}
+
+	return results;
+}
+
+async function executeMoveEmail(
+	context: IExecuteFunctions,
+	client: ImapFlow,
+	itemIndex: number,
+): Promise<INodeExecutionData[]> {
+	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
+	const emailUid = context.getNodeParameter('emailUid', itemIndex) as string;
+	const destination = context.getNodeParameter('destinationMailbox', itemIndex) as string;
+
+	await client.mailboxOpen(mailbox, { readOnly: false });
+	const result = await client.messageMove(emailUid, destination, { uid: true });
+
+	return [
+		{
+			json: {
+				success: true,
+				moved: result !== false,
+				...(result && typeof result === 'object'
+					? { path: result.path, destination: result.destination, uidMap: result.uidMap }
+					: {}),
+			},
+		},
+	];
+}
+
+async function executeDeleteEmail(
+	context: IExecuteFunctions,
+	client: ImapFlow,
+	itemIndex: number,
+): Promise<INodeExecutionData[]> {
+	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
+	const emailUid = context.getNodeParameter('emailUid', itemIndex) as string;
+
+	await client.mailboxOpen(mailbox, { readOnly: false });
+	const result = await client.messageDelete(emailUid, { uid: true });
+
+	return [
+		{
+			json: {
+				success: true,
+				deleted: result,
+			},
+		},
+	];
+}
+
+// ==================== Node Class ====================
+
 export class GroupwiseImap implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'GroupWise IMAP',
@@ -27,9 +292,10 @@ export class GroupwiseImap implements INodeType {
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
+		usableAsTool: true,
 		credentials: [
 			{
-				name: 'imap',
+				name: 'groupwiseImapApi',
 				required: true,
 				testedBy: 'testImapConnection',
 			},
@@ -49,10 +315,10 @@ export class GroupwiseImap implements INodeType {
 						action: 'Create a draft email',
 					},
 					{
-						name: 'List Mailboxes',
-						value: 'listMailboxes',
-						description: 'List all available mailbox folders',
-						action: 'List mailbox folders',
+						name: 'Delete Email',
+						value: 'deleteEmail',
+						description: 'Delete an email by UID',
+						action: 'Delete an email',
 					},
 					{
 						name: 'Get Emails',
@@ -61,16 +327,16 @@ export class GroupwiseImap implements INodeType {
 						action: 'Get emails from folder',
 					},
 					{
+						name: 'List Mailboxes',
+						value: 'listMailboxes',
+						description: 'List all available mailbox folders',
+						action: 'List mailbox folders',
+					},
+					{
 						name: 'Move Email',
 						value: 'moveEmail',
 						description: 'Move an email to another folder',
 						action: 'Move an email',
-					},
-					{
-						name: 'Delete Email',
-						value: 'deleteEmail',
-						description: 'Delete an email by UID',
-						action: 'Delete an email',
 					},
 				],
 			},
@@ -81,7 +347,8 @@ export class GroupwiseImap implements INodeType {
 				name: 'mailbox',
 				type: 'string',
 				default: 'Drafts',
-				description: 'The mailbox folder to save the draft in (e.g. "Drafts", "INBOX", "Entwürfe"). Use "List Mailboxes" to find the correct name.',
+				description:
+					'The mailbox folder to save the draft in (e.g. "Drafts", "INBOX"). Use "List Mailboxes" to find the correct name.',
 				displayOptions: {
 					show: {
 						operation: ['createDraft'],
@@ -212,8 +479,11 @@ export class GroupwiseImap implements INodeType {
 				displayName: 'Limit',
 				name: 'limit',
 				type: 'number',
-				default: 10,
-				description: 'Maximum number of emails to return',
+				typeOptions: {
+					minValue: 1,
+				},
+				default: 50,
+				description: 'Max number of results to return',
 				displayOptions: {
 					show: {
 						operation: ['getEmails'],
@@ -282,7 +552,7 @@ export class GroupwiseImap implements INodeType {
 				},
 			},
 
-			// === Connection Options (all operations) ===
+			// === Connection Options (alphabetized) ===
 			{
 				displayName: 'Options',
 				name: 'options',
@@ -291,53 +561,27 @@ export class GroupwiseImap implements INodeType {
 				default: {},
 				options: [
 					{
-						displayName: 'Max Retries',
-						name: 'maxRetries',
-						type: 'number',
-						default: 3,
-						description: 'Number of retries on connection errors (e.g. "Unexpected close")',
-					},
-					{
-						displayName: 'Retry Delay (ms)',
-						name: 'retryDelay',
-						type: 'number',
-						default: 3000,
-						description: 'Initial delay between retries (doubles each attempt)',
-					},
-					{
-						displayName: 'Connection Timeout (ms)',
+						displayName: 'Connection Timeout (Ms)',
 						name: 'connectionTimeout',
 						type: 'number',
 						default: 90000,
 						description: 'Timeout for establishing the IMAP connection',
 					},
 					{
-						displayName: 'Socket Timeout (ms)',
-						name: 'socketTimeout',
-						type: 'number',
-						default: 300000,
-						description: 'Timeout for socket inactivity (default: 5 minutes)',
-					},
-					{
-						displayName: 'Greeting Timeout (ms)',
-						name: 'greetingTimeout',
-						type: 'number',
-						default: 30000,
-						description: 'Timeout waiting for server greeting after connect',
-					},
-					{
-						displayName: 'Use STARTTLS',
-						name: 'useStartTls',
+						displayName: 'Enable Debug Logging',
+						name: 'enableDebug',
 						type: 'boolean',
 						default: false,
-						description: 'Whether to use STARTTLS instead of direct TLS. Try this if direct TLS fails.',
+						description:
+							'Whether to log IMAP protocol details to n8n logs for troubleshooting',
 					},
 					{
 						displayName: 'Force Login Method',
 						name: 'loginMethod',
 						type: 'options',
 						default: 'auto',
-						description: 'Override the authentication method. Try LOGIN or PLAIN if auto-detect fails.',
+						description:
+							'Override the authentication method. Try LOGIN or PLAIN if auto-detect fails.',
 						options: [
 							{ name: 'Auto', value: 'auto' },
 							{ name: 'LOGIN', value: 'LOGIN' },
@@ -345,18 +589,49 @@ export class GroupwiseImap implements INodeType {
 						],
 					},
 					{
+						displayName: 'Greeting Timeout (Ms)',
+						name: 'greetingTimeout',
+						type: 'number',
+						default: 30000,
+						description: 'Timeout waiting for server greeting after connect',
+					},
+					{
 						displayName: 'Ignore Certificate Errors',
 						name: 'ignoreCertErrors',
 						type: 'boolean',
 						default: true,
-						description: 'Whether to ignore TLS certificate errors (self-signed, internal CA). Enable this for GroupWise with internal certificates.',
+						description:
+							'Whether to ignore TLS certificate errors (self-signed, internal CA). Enable this for GroupWise with internal certificates.',
 					},
 					{
-						displayName: 'Enable Debug Logging',
-						name: 'enableDebug',
+						displayName: 'Max Retries',
+						name: 'maxRetries',
+						type: 'number',
+						default: 3,
+						description:
+							'Number of retries on connection errors (e.g. "Unexpected close")',
+					},
+					{
+						displayName: 'Retry Delay (Ms)',
+						name: 'retryDelay',
+						type: 'number',
+						default: 3000,
+						description: 'Initial delay between retries (doubles each attempt)',
+					},
+					{
+						displayName: 'Socket Timeout (Ms)',
+						name: 'socketTimeout',
+						type: 'number',
+						default: 300000,
+						description: 'Timeout for socket inactivity (default: 5 minutes)',
+					},
+					{
+						displayName: 'Use STARTTLS',
+						name: 'useStartTls',
 						type: 'boolean',
 						default: false,
-						description: 'Whether to log IMAP protocol details to n8n logs for troubleshooting',
+						description:
+							'Whether to use STARTTLS instead of direct TLS. Try this if direct TLS fails.',
 					},
 				],
 			},
@@ -390,7 +665,7 @@ export class GroupwiseImap implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const operation = this.getNodeParameter('operation', 0) as string;
-		const credentials = await this.getCredentials('imap');
+		const credentials = await this.getCredentials('groupwiseImapApi');
 		const options = this.getNodeParameter('options', 0, {}) as NodeOptions;
 
 		const maxRetries = options.maxRetries ?? 3;
@@ -406,10 +681,8 @@ export class GroupwiseImap implements INodeType {
 				try {
 					client = createImapClient(credentials, options, this);
 
-					// Register error handler before connect to catch early disconnects
-					const connectionErrors: string[] = [];
-					client.on('error', (err: Error) => {
-						connectionErrors.push(err.message);
+					client.on('error', () => {
+						// Silently handle connection errors — retry logic handles them
 					});
 
 					await client.connect();
@@ -432,13 +705,15 @@ export class GroupwiseImap implements INodeType {
 							result = await executeDeleteEmail(this, client, i);
 							break;
 						default:
-							throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
+							throw new NodeOperationError(
+								this.getNode(),
+								`Unknown operation: ${operation}`,
+							);
 					}
 
 					returnData.push(...result);
 					lastError = undefined;
-					break; // Success
-
+					break;
 				} catch (error) {
 					lastError = error as Error;
 					const errorMsg = lastError.message || '';
@@ -454,12 +729,11 @@ export class GroupwiseImap implements INodeType {
 						errorMsg.includes('connection dropped');
 
 					if (isRetryable && attempt < maxRetries) {
-						// Exponential backoff: 3s, 6s, 12s, ...
-						const delay = baseRetryDelay * Math.pow(2, attempt);
+						const retryDelay = baseRetryDelay * Math.pow(2, attempt);
 						this.logger.warn(
-							`GroupWise IMAP: Attempt ${attempt + 1}/${maxRetries + 1} failed: "${errorMsg}". Retrying in ${delay}ms...`,
+							`GroupWise IMAP: Attempt ${attempt + 1}/${maxRetries + 1} failed: "${errorMsg}". Retrying in ${retryDelay}ms...`,
 						);
-						await sleep(delay);
+						await delay(retryDelay);
 						continue;
 					}
 				} finally {
@@ -489,276 +763,4 @@ export class GroupwiseImap implements INodeType {
 
 		return [returnData];
 	}
-}
-
-// ==================== Types ====================
-
-interface NodeOptions {
-	maxRetries?: number;
-	retryDelay?: number;
-	connectionTimeout?: number;
-	socketTimeout?: number;
-	greetingTimeout?: number;
-	useStartTls?: boolean;
-	loginMethod?: string;
-	ignoreCertErrors?: boolean;
-	enableDebug?: boolean;
-}
-
-// ==================== Helper Functions ====================
-
-function createImapClient(
-	credentials: ICredentialDataDecryptedObject,
-	options?: NodeOptions,
-	context?: IExecuteFunctions,
-): ImapFlow {
-	const host = credentials.host as string;
-	const port = (credentials.port as number) || 993;
-	const user = credentials.user as string;
-	const password = credentials.password as string;
-	const secure = credentials.secure as boolean ?? true;
-	const allowUnauthorizedCerts = (credentials.allowUnauthorizedCerts as boolean) ?? false;
-	// Node-level option overrides credential setting (default: true for GroupWise)
-	const ignoreCertErrors = (options?.ignoreCertErrors ?? true) || allowUnauthorizedCerts;
-	const useStartTls = options?.useStartTls ?? false;
-
-	// Build auth config
-	const auth: ImapFlowOptions['auth'] = {
-		user,
-		pass: password,
-	};
-
-	// Force specific login method if configured
-	if (options?.loginMethod && options.loginMethod !== 'auto') {
-		auth.loginMethod = options.loginMethod;
-	}
-
-	// Build logger - either pipe to n8n logger or disable
-	let logger: ImapFlowOptions['logger'] = false;
-	if (options?.enableDebug && context) {
-		logger = {
-			debug: (obj: any) => context.logger.debug(`[IMAP] ${formatLog(obj)}`),
-			info: (obj: any) => context.logger.info(`[IMAP] ${formatLog(obj)}`),
-			warn: (obj: any) => context.logger.warn(`[IMAP] ${formatLog(obj)}`),
-			error: (obj: any) => context.logger.error(`[IMAP] ${formatLog(obj)}`),
-		};
-	}
-
-	// For self-signed / internal CA certs: also set the process-level flag
-	// because rejectUnauthorized alone doesn't cover UNABLE_TO_VERIFY_LEAF_SIGNATURE
-	if (ignoreCertErrors) {
-		process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-	}
-
-	const imapConfig: ImapFlowOptions = {
-		host,
-		port,
-		// For STARTTLS: connect insecurely, then upgrade
-		secure: useStartTls ? false : secure,
-		auth,
-		tls: {
-			rejectUnauthorized: !ignoreCertErrors,
-			// Some GroupWise servers need explicit min TLS version
-			minVersion: 'TLSv1' as any,
-		},
-		logger,
-
-		// Timeouts - generous defaults for slow GroupWise servers
-		connectionTimeout: options?.connectionTimeout ?? 90000,
-		greetingTimeout: options?.greetingTimeout ?? 30000,
-		socketTimeout: options?.socketTimeout ?? 300000,
-
-		// === GroupWise compatibility flags ===
-		// Disable COMPRESS - GroupWise often breaks with compressed streams
-		disableCompression: true,
-		// Disable auto-IDLE - prevents premature disconnects
-		disableAutoIdle: true,
-		// Disable BINARY extension - GroupWise doesn't implement it properly
-		disableBinary: true,
-		// Disable ENABLE command - GroupWise may close connection on unsupported extensions
-		disableAutoEnable: true,
-		// Don't send ID command - GroupWise may not support it and disconnect
-		clientInfo: false as any,
-
-		// STARTTLS handling
-		...(useStartTls ? { doSTARTTLS: true } : {}),
-	};
-
-	return new ImapFlow(imapConfig);
-}
-
-function formatLog(obj: any): string {
-	if (typeof obj === 'string') return obj;
-	if (obj?.msg) return obj.msg;
-	try {
-		return JSON.stringify(obj);
-	} catch {
-		return String(obj);
-	}
-}
-
-async function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ==================== Operation Implementations ====================
-
-async function executeCreateDraft(
-	context: IExecuteFunctions,
-	client: ImapFlow,
-	itemIndex: number,
-): Promise<INodeExecutionData[]> {
-	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
-	const inputFormat = context.getNodeParameter('inputFormat', itemIndex) as string;
-
-	let rfc822Content: string | Buffer;
-
-	if (inputFormat === 'rfc822') {
-		rfc822Content = context.getNodeParameter('rfc822Content', itemIndex) as string;
-	} else {
-		const from = context.getNodeParameter('from', itemIndex) as string;
-		const to = context.getNodeParameter('to', itemIndex) as string;
-		const subject = context.getNodeParameter('subject', itemIndex) as string;
-		const text = context.getNodeParameter('text', itemIndex) as string;
-		const html = context.getNodeParameter('html', itemIndex, '') as string;
-
-		const transporter = nodemailer.createTransport({
-			streamTransport: true,
-			buffer: true,
-		});
-
-		const mailOptions: nodemailer.SendMailOptions = {
-			from,
-			to,
-			subject,
-			date: new Date(),
-		};
-
-		if (html) {
-			mailOptions.html = html;
-		} else {
-			mailOptions.text = text;
-		}
-
-		const info = await transporter.sendMail(mailOptions);
-		rfc822Content = (info as any).message as Buffer;
-	}
-
-	// APPEND directly without opening the mailbox first.
-	// GroupWise can disconnect if you open+append in quick succession.
-	// ImapFlow's append() doesn't require the mailbox to be selected.
-	const appendResult = await client.append(mailbox, rfc822Content, ['\\Draft']);
-
-	if (!appendResult) {
-		throw new Error(`APPEND to "${mailbox}" failed. The server did not confirm the operation.`);
-	}
-
-	return [
-		{
-			json: {
-				success: true,
-				mailbox,
-				uid: appendResult.uid,
-				uidValidity: Number(appendResult.uidValidity),
-				seq: appendResult.seq,
-			},
-		},
-	];
-}
-
-async function executeListMailboxes(
-	client: ImapFlow,
-): Promise<INodeExecutionData[]> {
-	const mailboxes = await client.list();
-	return mailboxes.map((mb) => ({
-		json: {
-			name: mb.name,
-			path: mb.path,
-			delimiter: mb.delimiter,
-			flags: Array.from(mb.flags || []),
-			specialUse: mb.specialUse || null,
-			listed: mb.listed,
-			subscribed: mb.subscribed,
-		},
-	}));
-}
-
-async function executeGetEmails(
-	context: IExecuteFunctions,
-	client: ImapFlow,
-	itemIndex: number,
-): Promise<INodeExecutionData[]> {
-	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
-	const limit = context.getNodeParameter('limit', itemIndex) as number;
-
-	await client.mailboxOpen(mailbox, { readOnly: true });
-
-	const results: INodeExecutionData[] = [];
-	let count = 0;
-
-	// Fetch messages without getMailboxLock - the lock can cause issues with GroupWise
-	for await (const message of client.fetch(`1:*`, {
-		envelope: true,
-		flags: true,
-		uid: true,
-	})) {
-		results.push({
-			json: {
-				uid: message.uid,
-				seq: message.seq,
-				flags: Array.from(message.flags || []),
-				envelope: message.envelope as any,
-			},
-		});
-		count++;
-		if (count >= limit) break;
-	}
-
-	return results;
-}
-
-async function executeMoveEmail(
-	context: IExecuteFunctions,
-	client: ImapFlow,
-	itemIndex: number,
-): Promise<INodeExecutionData[]> {
-	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
-	const emailUid = context.getNodeParameter('emailUid', itemIndex) as string;
-	const destination = context.getNodeParameter('destinationMailbox', itemIndex) as string;
-
-	await client.mailboxOpen(mailbox, { readOnly: false });
-	const result = await client.messageMove(emailUid, destination, { uid: true });
-
-	return [
-		{
-			json: {
-				success: true,
-				moved: result !== false,
-				...(result && typeof result === 'object'
-					? { path: result.path, destination: result.destination, uidMap: result.uidMap }
-					: {}),
-			},
-		},
-	];
-}
-
-async function executeDeleteEmail(
-	context: IExecuteFunctions,
-	client: ImapFlow,
-	itemIndex: number,
-): Promise<INodeExecutionData[]> {
-	const mailbox = context.getNodeParameter('mailbox', itemIndex) as string;
-	const emailUid = context.getNodeParameter('emailUid', itemIndex) as string;
-
-	await client.mailboxOpen(mailbox, { readOnly: false });
-	const result = await client.messageDelete(emailUid, { uid: true });
-
-	return [
-		{
-			json: {
-				success: true,
-				deleted: result,
-			},
-		},
-	];
 }

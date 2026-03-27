@@ -27,18 +27,18 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 ## Credentials
 
-This node uses n8n's **built-in IMAP credential**. No custom credentials are required.
+This node ships its own **GroupWise IMAP** credential type.
 
 ### Setup
 
-1. In n8n, go to **Credentials** → **Add Credential** → search for **IMAP**
+1. In n8n, go to **Credentials** → **Add Credential** → search for **GroupWise IMAP**
 2. Fill in your GroupWise IMAP server details:
    - **Host**: Your GroupWise IMAP server hostname or IP
    - **Port**: `993` (SSL/TLS) or `143` (STARTTLS)
    - **User**: Your GroupWise username or email address
    - **Password**: Your GroupWise password
    - **SSL/TLS**: Enable for port 993
-   - **Allow Self-Signed Certificates**: Enable if your GroupWise server uses an internal or self-signed certificate
+   - **Skip TLS Verification**: Enable if your GroupWise server uses an internal or self-signed certificate
 
 ### Prerequisites
 
@@ -96,7 +96,7 @@ The email is saved with the `\Draft` flag. Make sure to use the correct folder n
 
 If you encounter **"Unexpected close"** errors:
 
-1. Ensure **Allow Self-Signed Certificates** is enabled in your IMAP credential
+1. Ensure **Skip TLS Verification** is enabled in your GroupWise IMAP credential
 2. Verify the **Ignore Certificate Errors** option is enabled in the node settings
 3. Enable **Debug Logging** to see the exact IMAP protocol exchange
 4. Check that your n8n instance has network access to the GroupWise server
