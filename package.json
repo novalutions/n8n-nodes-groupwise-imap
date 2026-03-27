@@ -1,0 +1,59 @@
+{
+  "name": "n8n-nodes-groupwise-imap",
+  "version": "0.1.0",
+  "description": "n8n community node for Micro Focus / OpenText GroupWise IMAP — create drafts, list mailboxes, fetch, move & delete emails with built-in retry logic and GroupWise-specific compatibility fixes.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "imap",
+    "groupwise",
+    "micro-focus",
+    "opentext",
+    "email",
+    "draft"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap#readme",
+  "author": {
+    "name": "Jeremie Constant",
+    "url": "https://github.com/jeremieconstant"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap/issues"
+  },
+  "main": "dist/nodes/GroupwiseImap/GroupwiseImap.node.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && npm run copy-icons",
+    "copy-icons": "cp nodes/GroupwiseImap/*.svg dist/nodes/GroupwiseImap/ 2>/dev/null || true",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "lint": "eslint nodes/ --ext .ts"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [],
+    "nodes": [
+      "dist/nodes/GroupwiseImap/GroupwiseImap.node.js"
+    ]
+  },
+  "dependencies": {
+    "imapflow": "^1.2.13",
+    "nodemailer": "^8.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/nodemailer": "^6.4.17",
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}
