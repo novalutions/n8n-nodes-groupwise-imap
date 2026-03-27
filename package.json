@@ -13,7 +13,7 @@
     "draft"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap#readme",
+  "homepage": "https://github.com/novalutions/n8n-nodes-groupwise-imap#readme",
   "author": {
     "name": "novalutions",
     "email": "info@novalutions.de",
@@ -21,10 +21,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap.git"
+    "url": "https://github.com/novalutions/n8n-nodes-groupwise-imap.git"
   },
   "bugs": {
-    "url": "https://github.com/jeremieconstant/n8n-nodes-groupwise-imap/issues"
+    "url": "https://github.com/novalutions/n8n-nodes-groupwise-imap/issues"
   },
   "main": "dist/nodes/GroupwiseImap/GroupwiseImap.node.js",
   "files": [
