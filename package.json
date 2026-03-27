@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-groupwise-imap",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "n8n community node for Micro Focus / OpenText GroupWise IMAP — create drafts, list mailboxes, fetch, move & delete emails with built-in retry logic and GroupWise-specific compatibility fixes.",
   "keywords": [
     "n8n-community-node-package",
