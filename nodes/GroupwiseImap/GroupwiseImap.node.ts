@@ -136,6 +136,11 @@ async function executeCreateDraft(
 		const subject = context.getNodeParameter('subject', itemIndex) as string;
 		const text = context.getNodeParameter('text', itemIndex) as string;
 		const html = context.getNodeParameter('html', itemIndex, '') as string;
+		const attachmentsProperty = context.getNodeParameter(
+			'attachments',
+			itemIndex,
+			'',
+		) as string;
 
 		const transporter = nodemailer.createTransport({
 			streamTransport: true,
@@ -153,6 +158,28 @@ async function executeCreateDraft(
 			mailOptions.html = html;
 		} else {
 			mailOptions.text = text;
+		}
+
+		if (attachmentsProperty) {
+			const propertyNames = attachmentsProperty
+				.split(',')
+				.map((p) => p.trim())
+				.filter((p) => p !== '');
+
+			const attachments: nodemailer.SendMailOptions['attachments'] = [];
+			for (const propertyName of propertyNames) {
+				const binaryData = context.helpers.assertBinaryData(itemIndex, propertyName);
+				const buffer = await context.helpers.getBinaryDataBuffer(itemIndex, propertyName);
+				attachments.push({
+					filename: binaryData.fileName ?? propertyName,
+					content: buffer,
+					contentType: binaryData.mimeType,
+				});
+			}
+
+			if (attachments.length > 0) {
+				mailOptions.attachments = attachments;
+			}
 		}
 
 		const info = await transporter.sendMail(mailOptions);
@@ -439,6 +466,21 @@ export class GroupwiseImap implements INodeType {
 				},
 				default: '',
 				description: 'Optional HTML body. If set, takes precedence over text body.',
+				displayOptions: {
+					show: {
+						operation: ['createDraft'],
+						inputFormat: ['fields'],
+					},
+				},
+			},
+			{
+				displayName: 'Attachments',
+				name: 'attachments',
+				type: 'string',
+				default: '',
+				placeholder: 'data',
+				description:
+					'Name(s) of the binary property on the input item containing the file(s) to attach. Separate multiple property names with commas (e.g. "data,attachment_1").',
 				displayOptions: {
 					show: {
 						operation: ['createDraft'],
